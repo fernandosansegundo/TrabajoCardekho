@@ -1,0 +1,519 @@
+---
+title: "Cardekho"
+author: "Miren Ostolaza Larrañaga y María García Spínola"
+date: "2/12/2020"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{center} \includegraphics[width=2in,height=2in]{descarga.png}\LARGE\\}
+- \posttitle{\end{center}}
+---
+
+```{r figurename, echo=FALSE,  out.width = '10%'}
+knitr::include_graphics("descarga.png")
+```
+
+---
+title: "Trabajo Fundamentos Matemáticos"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+## Introducción
+
+Desde la empresa Cardekho quieren saber cómo definir el precio del coche en función de sus características para conseguir el máximo beneficio en cada venta. Para ello, se dispone de una base de datos con registros referentes a diferentes vehículos que han vendido en el pasado. Cada registro incluye información sobre las siguientes variables:
+  
+  * **Year**: año en el que se efectúa la venta.
+  * **Selling_price**: precio de venta.
+  * **Km_driven**: kilómetros recorridos por el vehículo.
+  * **Fuel**: tipo de combustible que consume.
+  * **Seller_type**: si la primera venta se ha efectuado mediante un distribuidor o por el propio propietario.
+  * **Transmission**: tipo de de transmisión del motor.
+  * **Owner**: número de propietarios que ha tenido el vehículo.
+  * **Mileage**: kilometraje del vehículo.
+  * **Engine**: cilindrada del motor.
+  * **Max_power**: potencia del motor.
+  * **Torque**: fuerza del motor.
+  * **Seats**: número de asientos del vehículo.
+  
+  
+
+## Análisis exploratorio
+
+El paso previo al análisis exploratorio del dataset consiste en cargar las librerias que se van a necesitar y establecer el directorio de trabajo.
+
+```{r include=FALSE}
+devtools::install_github("JaiPizGon/NeuralSens")
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(GGally)
+library(leaps)
+library(glmnet)
+library(pls)
+library(car)
+library(corrplot)
+library(MLTools)
+library(splines)
+library(NeuralNetTools)
+library(gridExtra)
+library(kernlab)
+library(NeuralSens)
+
+```
+A partir de estos datos se pide extraer información que pueda ser de utilidad y en base a ello generar un modelo capaz de predecir el precio óptimo de venta. 
+
+La información disponible para hacer el estudio de Cardekho se encuentra recogida en el archivo *Car details v3.csv* y es conveniente realizar un análisis inicial de los datos que se disponen.
+```{r setup}
+fdata = read.csv("Car details v3.csv")
+dim(fdata)
+str(fdata)
+summary(fdata)
+```
+
+De este resumen ya se obtiene mucha información:
+
+* El dataset está formado por 8128 observaciones y 13 variables, de las cuales 12 son de entrada y 1 variable de salida, *selling_price*.
+
+* Las variables de primeras se dividen en dos grupos, numéricas y strings, pero más tarde habrá que realizar un tratamiento de algunas de ellas, puesto que se tratan de variables numéricas pero están asignadas como strings.
+
+* Las variables cuya media y mediana difieren se deben a que existen muchos outliers en esas variables.
+
+* Se puede observar que hay mayor tendecia en la adquisición de coches manuales que automáticos.
+
+* La preferencia de combustible se establece en petrol y diesel, siendo este último el que mayor número de coches poseen. 
+
+* El dataset con el que trabajamos cuenta con los registros de coches entre 1994 y 2020.
+
+* La media de asientos es 5, número de asientos que poseen los coches de uso particular para el transporte de pasajeros normalmente.
+
+* La preferencia de comprar un coche es que este sea de primer propietario, es decir, nuevo.
+
+
+
+Para poder trabajar con las variables numéricas es necesario eliminar las unidades que acompañan a los valores de las variables *max_power*, *mileage* y *engine*:
+```{r}
+fdata$max_power = gsub(" bhp", "",fdata$max_power )
+fdata$max_power = as.double(fdata$max_power)
+
+fdata$engine = gsub(" CC", "",fdata$engine )
+fdata$engine = as.double(fdata$engine)
+
+fdata$mileage = gsub(" kmpl", "",fdata$mileage )
+fdata$mileage = gsub(" km/kg","",fdata$mileage)
+fdata$mileage = as.double(fdata$mileage)
+
+```
+
+Se toma la decisión de trabajar con todas las variables del dataset excluyendo la variable *torque*, por tener esta muchos caracteres y espacios difíciles de tratar, y la variable *name* por ser un dato irrelevante en este estudio y tener muchos valores distintos, casi tantos como observaciones.
+```{r}
+fdata = fdata %>%
+  select(year, selling_price, km_driven, fuel, seller_type, transmission,
+         owner, mileage, engine,max_power, seats)
+```
+
+Otro aspecto inicial a tener en cuenta es analizar si hay valores nulos o vacíos en alguna observación para alguna variable. En este caso, al disponer de un dataset con suficientes observaciones, se decide elimnar estos datos vacíos:
+```{r}
+any(is.na(fdata))
+fdata = na.omit(fdata)
+```
+
+Al analizar el dataset, detectamos la presencia de variables categóricas que deberían factorizarse, en concreto las variables *fuel*, *seller_type*, *transmission* y *owner*.
+```{r}
+fdata$fuel = as.factor(fdata$fuel)
+fdata$seller_type = as.factor(fdata$seller_type)
+fdata$transmission = as.factor(fdata$transmission)
+fdata$owner = as.factor(fdata$owner)
+```
+
+Se analiza la distribución de la variable de salida *selling_price* y se comprueba que es asimétrica a la derecha, lo ideal sería que siguiese una distribución normal. Pero al dibujar el output, la gráfica parece indicar que no se trata de una variable normal.
+```{r}
+hist(x = fdata$selling_price, breaks=150, probability = TRUE, main="")
+lines(density(fdata$selling_price), col="red", lwd=4)
+qqnorm(fdata$selling_price)
+qqline(fdata$selling_price)
+```
+
+El siguiente paso es analizar la correlación entre las variables mediante las siguientes gráficas de ggplot y corrplot. Se puede observar que existe cierta correlación entre algunas de las variables de entrada:
+
+* Fuerte correlación entre las variables de entrada *engine* y *max_power*.
+  
+* Cierta correlación entre *seats* y *engine*.
+  
+* Cierta correlación negativa entre *engine* y *mileage*.
+  
+* La variable que parece tener más relación con la variable de salida (*selling_price*) es *max_power*.
+```{r}
+ggpairs(fdata,aes( alpha = 0.3))
+PlotDataframe(fdata, output.name = "selling_price")
+
+
+numvars <- sapply(fdata, class) %in% c("integer","numeric")
+C <- cor(fdata[,numvars])
+corrplot::corrplot(C, method = "circle")
+corrplot::corrplot(C, method = "number")
+```
+
+
+Se toma la decisión de no eliminar ninguna variable de entrada a pesar de estar correlacionadas hasta entrenar los modelos y analizar cómo se comportan cada una de las variables.
+
+Por otro lado, se analizan los valores atípicos de cada una de las variables y se observan muchos outliers:
+
+* Se pueden ver muchos valores atípicos en la variable *km_driven* que pueden deberse a coches muy antiguos con muchos kms recorridos.
+
+* Los outliers más significativos de *mileage* se encuentran en 0, que deberían atribuirse a los coches nuevos con un kilometraje de 0.
+
+* La variable *seats* presenta outliers de hasta 14 asientos que deben tratarse de vehículos como microbuses.
+
+* Presentan muchos valores atípicos también *max_power* y *engine*.
+```{r  echo=FALSE}
+bxp_km_driven = boxplot(fdata$km_driven, col="orange")
+#bxp_km_driven$out 
+
+bxp_mileage = boxplot(fdata$mileage, col="orange")
+#bxp_mileage$out
+
+bxp_seats = boxplot(fdata$seats, col="orange")
+#bxp_seats$out
+
+bxp_engine = boxplot(fdata$engine, col="orange")
+#bxp_engine$out 
+
+bxp_max_power = boxplot(fdata$max_power, col="orange")
+#bxp_max_power$out
+```
+
+A continuación, se estudia el output en función de las dos variables que parecen que más sesgan, *year* y *max_power*:
+```{r}
+ggplot(fdata,aes(x=max_power,y=selling_price, color = year))+geom_point()+geom_smooth(method="lm")
+```
+
+Se puede comprobar que el precio aumenta de manera líneal a mayor potencia del coche y de igual modo, los coches más nuevos (2020) son los que mayor precio de venta tienen, lo cual tiene sentido.
+
+Las gráficas de mosaico ayudan a ver de manera visual los datos agrupados por distintos factores para ver la frecuencia de las variables que se están evaluando en función de otras variables de entrada. Por ejemplo, en este caso, este gráfico permite conocer que los coches automáticos se corresponden con petroleo o diesel.
+```{r}
+mosaicplot(fdata$fuel~fdata$transmission, data=fdata)
+```
+
+El siguiente paso llevado a cabo para analizar el dataset consiste en estudiar la independencia de algunas de las variables más significativas. Para ello se comprueba el rango de las variables para dividirlas en intervalos y ver el comportamiento dos a dos mediante gráficas de ggplot. Por otro lado, se estudia la independencia con test de chisq, de tal forma que si se rechaza la hipótesis nula por tener un p-valor muy bajo, las variables que se están comparando son dependientes.
+```{r warning= FALSE}
+range(fdata$engine)
+franjaEngine= cut(fdata$engine, breaks = seq(from=624, to=3604, by=400))
+head(franjaEngine)
+
+range(fdata$max_power)
+franjaMaxPower = cut(fdata$max_power, breaks = seq(from=32.8, to= 400.0, by= 35))
+head(franjaMaxPower)
+
+ggplot(data.frame(franjaEngine, franjaMaxPower))+
+  geom_bar(aes(x=franjaEngine, fill=franjaMaxPower))
+
+chisq.test(franjaEngine, franjaMaxPower)
+```
+
+Se concluye que como el p-valor es muy pequeño, casi 0, se rechaza H0. Por tanto, *engine* y *max_power* son dependientes, hecho que ya se había comprobado anteriormente en la correlación de las variables.
+
+```{r}
+range(fdata$mileage)
+franjaMileage = cut(fdata$mileage, breaks = seq(from=0, to= 42, by= 6))
+
+ggplot(data.frame(franjaMileage, fdata$year))+
+  geom_bar(aes(x=fdata$year, fill=franjaMileage))
+```
+
+De este análisis se extrae la siguiente conclusión, que hasta el año 2009 aproximadamente, la franja de *mileage* dominante era entre 12 y 18 kmpl, mientras que a partir de 2010 la franja dominante siempre es de 18-24 kmpl y hay un aumento en los coches con rendimiento entre 24-30 kmpl.
+
+
+
+## Análisis de probabilidades
+
+A continuación, en este apartado del estudio, se van a calcular distintas probabilidades que podrían ser de interés en este dataset de Cardekho y algunas medias agrupadas según distintas variables:
+
+* **¿Probabilidad de que un coche elegido al azar sea de segunda mano?**
+```{r}
+prop.table(table(fdata$owner))
+```
+  0.255 es la probabilidad de que al azar un coche sea de segunda mano.
+  
+* **¿Probabilidad de que sea a la vez de diesel y automático?**
+```{r}
+prop.table(table(fdata$fuel, fdata$transmission))
+```
+Esta probabilidad, 0.0673, es muy baja con respecto a la probabilidad de que sea diesel y manual: 0.4765
+  
+* **Se calcula la media de precio de los coches según el tipo de combustible y transmisión del motor:**
+```{r}
+mediaPriceFuelTransmission = fdata%>%
+  group_by(fuel, transmission)%>%
+  summarise(mean(selling_price))
+(mediaPriceFuelTransmission)
+```
+
+Se puede observar que el precio más alto es para los coches automáticos diesel.
+  
+* **Se calcula la media de precio de los coches según el tipo de seller y owner:**
+```{r}
+mediaPriceSellerOwner = fdata%>%
+  group_by(seller_type, owner)%>%
+  summarise(mean(selling_price))
+(mediaPriceSellerOwner)
+
+ggplot(data = fdata) +
+  geom_bar(mapping = aes(x = seller_type, fill = owner), position = "dodge")
+```
+
+La media de precio de los coches vendidos por distribuidores es más alta que los vendidos por un individual. Evidentemente, los coches nuevos vendidos por distribuidor son los de precio más elevado y los coches de cuarta venta o superior resultan ser los más baratos y todos son vendidos por un particular.
+  
+  
+  
+  
+
+## Machine Learning
+
+Una vez ya se tiene una idea más clara de lo que representan los datos y de cómo se distribuyen, se procede a generar los modelos que ayudan a predecir el precio de un vehículo basándose en sus características. Es decir, se tendrán unas variables explicativas de entrada con las que se predecirá la variable de salida *selling_price* que hace referencia al precio final del coche.
+
+Para este apartado del estudio, se toma la decisión de eliminar los outliers de las variables *km_driven*, *mileage*, *max_power* y *engine* , ya que se dispone de observaciones suficientes, y estos valores atípicos podrían interferir de manera negativa en el entrenamiento y ajuste del modelo.
+```{r}
+outliers = boxplot(fdata$km_driven)$out
+outliers2 = boxplot(fdata$mileage)$out
+outliers3 = boxplot(fdata$max_power)$out
+outliers4 = bxp_engine$out 
+fdata = fdata[-which(fdata$km_driven %in% outliers),]
+fdata = fdata[-which(fdata$mileage %in% outliers2),]
+fdata = fdata[-which(fdata$max_power %in% outliers3),]
+fdata = fdata[-which(fdata$engine %in% outliers4),]
+```
+
+Lo primero será dividir la base de datos inicial en dos partes: una de ellas se utilizará para entrenar los modelos, y la otra parte, para validar dicho modelo. Las proporciones utilizadas para la partición han sido 80% y 20%, respectivamente.
+
+```{r}
+set.seed(150) 
+
+trainIndex <- createDataPartition(fdata$selling_price,      
+                                  p = 0.8,      
+                                  list = FALSE, 
+                                  times = 1) 
+fTR <- fdata[trainIndex,]
+fTS <- fdata[-trainIndex,]
+
+```
+
+Una vez se tiene el daset particionado, se hará uso de la técnica de validación cruzada para garantizar la independencia entre los datos de entrenamiento y prueba, y evitar así caer en el sobreentramiento del modelo.
+
+```{r}
+ctrl_tune <- trainControl(method = "cv",                     
+                          number = 10,
+                          summaryFunction = defaultSummary,  
+                          returnResamp = "final",              
+                          savePredictions = TRUE)    
+```
+
+## Regresión lineal
+
+El primer modelo generado estará basado en la regresión lineal. 
+Este es un modelo matemático usado para aproximar la relación de dependencia entre la variable dependiente con las variables independientes X. Como se ha comentado, la variable Y será *selling_price*, y en este primer modelo se incluirán todas las variables como variables explicativas.
+
+```{r}
+set.seed(150) 
+lm.fit <- train(form = selling_price~.,
+                data = fTR, 
+                method = "lm", 
+                tuneGrid = data.frame(intercept = TRUE), 
+                preProcess = c("center","scale"),
+                trControl = ctrl_tune, 
+                metric = "RMSE")
+lm.fit 
+
+summary(lm.fit) 
+
+```
+
+Se observa que este modelo es capaz de explicar la variabilidad de los datos de un 66.37%. En cuanto a la significancia de las variables explicativas, la única que ha resultado ser no influyente es la variable *seats* que hace referencia al número de asientos que tiene le vehículo. También se puede comprobar que la variable *fuel* solo es significativa cuando es de tipo Diesel.
+
+Una vez ya se ha generado el modelo, se puede evaluar su eficacia para el dataset de entrenamiento y para el de test. 
+
+```{r message = FALSE, warning = FALSE}
+
+fTR_eval=fTR
+fTS_eval=fTS
+
+fTR_eval$lm_pred <- predict(lm.fit,  newdata = fTR)  
+fTS_eval$lm_pred <- predict(lm.fit,  newdata = fTS)
+PlotModelDiagnosis(fTR, fTR$selling_price, fTR_eval$lm_pred,
+                   together = TRUE)
+
+```
+
+Analizando los residuos generados por el modelo  se puede afirmar que generalmente se ha conseguido modelar de manera eficiente los datos, ya que se observa que su media se aproxima al cero. Lo óptimo sería que siguieran una distribución normal pero no se consigue probablemente por la existencia de valores atípicos. Si se fija las vista en la variable *max_power*, se puede intuir un leve comportamiento cuadrático que se podría mejorar.
+
+
+Se genera un nuevo modelo de regresión lineal incluyendo la variable *max_power* al cuadrado. Además se prescindirá de la variable *seats* porque como se ha visto en el modelo anterior no es significativa para la variable de salida.
+```{r}
+set.seed(150) 
+lm2.fit = train(form = selling_price ~ poly(max_power,2,raw = TRUE)+year+ km_driven+ fuel+ seller_type+ transmission+ owner+ mileage+ engine, 
+                data = fTR, 
+                method = "lm", 
+                tuneGrid = data.frame(intercept = TRUE), 
+                preProcess = c("center","scale"),
+                trControl = ctrl_tune, 
+                metric = "RMSE")
+lm2.fit 
+
+ summary(lm2.fit$finalModel) 
+
+```
+
+Se puede observar que en este caso, todas las variables que se han introducido como variables independientes se han calificado como significativas incluida la variable cudrática que se ha añadido. Además, el valor de R cuadrado ha mejorado por lo que se confirma la mejora del modelo para predecir el output.
+
+```{r  message = FALSE, warning = FALSE}
+fTR_eval$lm2_pred <- predict(lm2.fit,newdata = fTR)
+fTS_eval$lm2_pred <- predict(lm2.fit,newdata = fTS)
+
+PlotModelDiagnosis(fTR, (fTR$selling_price), fTR_eval$lm2_pred,together = TRUE)
+```
+
+Igualmente se verifica que se ha conseguido estabilizar los residuos de la variable *max_power* tras añadir su efecto cuadrático en el modelo.
+
+
+
+
+## MLP 
+A continuación se hará uso de un modelo no lineal, el percentrón multicapa, más conocido como MLP. El perceptrón multicapa es una red neuronal  compuesta por varias capas ( de entrada, ocultas y de salida).
+ 
+ Se genera un primer modelo  de 10 capas ocultas de tamaño y con un valor de 0 para el parámetro de regularización. 
+ 
+ 
+ Por ser un modelo muy complejo, los valores elevados de la variable de salida podrían ser perjudiciales a la hora de entrenar el modelo. Por ello, se ha decidio normalizar esa variable para este caso.
+ 
+```{r}
+datos.escalada<- scale(fdata[,c(2)],center=T,scale=T)
+
+fdata2= fdata
+fdata2$selling_price = datos.escalada
+
+```
+
+Será necesario volver a dividir el dataset tras la normalización aplicada.
+
+```{r}
+set.seed(150) 
+
+trainIndex <- createDataPartition(fdata2$selling_price,      
+                                  
+                                  p = 0.8,      
+                                  list = FALSE, 
+                                  times = 1)    
+
+fTR <- fdata2[trainIndex,]
+fTS <- fdata2[-trainIndex,]
+```
+
+
+```{r}
+varindex <- variable.names(fdata) != "selling_price"
+
+ctrl_tune <- trainControl(method = "cv",                     
+                          number = 10,
+                          summaryFunction = defaultSummary,    
+                          returnResamp = "final",             
+                          savePredictions = TRUE)              
+
+```
+
+ 
+```{r include=FALSE}
+set.seed(150) 
+mlp.fit = train(form = selling_price~year+max_power+km_driven+mileage+engine+seats+transmission+fuel+seller_type,
+                data = fTR, 
+                method = "nnet",
+                linout = TRUE,
+                maxit = 50,
+                tuneGrid = data.frame(size = 15, decay = 0),
+                preProcess = c("center","scale"),
+                trControl = ctrl_tune, 
+                metric = "RMSE")
+
+
+```
+ 
+```{r}
+mlp.fit
+```
+
+Se analizan los resultados  mediante el análisis estadístico de sensibilidad, que evalúa la importancia de cada variable introducida.
+```{r}
+fTR_eval$mlp_pred = predict(mlp.fit,  newdata = fTR)  
+fTS_eval$mlp_pred = predict(mlp.fit,  newdata = fTS)  
+
+caret::R2(fTR_eval$mlp_pred,fTR_eval$selling_price)
+caret::R2(fTS_eval$mlp_pred,fTS_eval$selling_price)
+
+
+
+
+```
+```{r}
+SensAnalysisMLP(mlp.fit)
+```
+
+Se muestra graficamente la influencia de las variables introducidas de mayor a menor, e interesará prescindir de algunas para  conseguir un modelo más simple y robusto. Por tanto, en el segundo modelo mlp se eliminarán las variables *mileage*, *km_driven* y *seats*. Se mantienen los parámetros establecidos anteriormente y se vuelve a entrenar el modelo.
+
+
+```{r include=FALSE}
+
+set.seed(150) 
+mlp2.fit = train(form = selling_price~year+max_power+engine+transmission+fuel+seller_type,
+                data = fTR, 
+                method = "nnet",
+                linout = TRUE,
+                maxit = 50,
+                tuneGrid = data.frame(size = 15, decay = 0),
+                preProcess = c("center","scale"),
+                trControl = ctrl_tune, 
+                metric = "RMSE")
+
+```
+
+```{r}
+mlp2.fit 
+```
+
+```{r}
+fTR_eval$mlp2_pred = predict(mlp2.fit,  newdata = fTR)  
+fTS_eval$mlp2_pred = predict(mlp2.fit,  newdata = fTS)
+
+caret::R2(fTR_eval$mlp2_pred,fTR_eval$selling_price)
+caret::R2(fTS_eval$mlp2_pred,fTS_eval$selling_price)
+
+```
+
+Se puede percibir la mejora en el R cuadrado para el dataset de entrenamiento y test, por lo que se elige este modelo prescindiendo de las tres variables que se han mencionado. Además, se busca un equilibrio entre el ajuste del modelo y la complejidad del mismo.
+
+
+## Comparación de modelos
+
+Para terminar, se procede a comparar cuál de los dos modelos será más preciso y recomendable para este caso de uso. Para ello,se deben tener en cuenta los valores de R cuadrado, MAE y RMSE. El R cuadrado señala el grado de efectividad que tendrán las variables de entrada para explicar la variable de salida. MAE será el error absoluto medio entre el valor real y el valor predicho, y  RMSE hace referencia a la raíz de ese error cuadrático.
+
+
+```{r}
+transformResults <- resamples(list( lm2=lm2.fit, mlp2=mlp2.fit))
+summary(transformResults)
+
+
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+dotplot(transformResults, scales=scales)
+
+caret::R2(fTS_eval$lm2_pred,fTS_eval$selling_price)
+
+caret::R2(fTS_eval$mlp2_pred,fTS_eval$selling_price)
+
+```
+
+
+
+Parece evidente que el modelo de redes neuronales es más adecuado para predecir el precio final del coche, ya que se obtiene mayor R cuadrado y errores más bajos.En consecuencia, se recomendará hacer uso de ese modelo para realizar predicciones futuras en base a las variables de entrada definidads en el modelo.
